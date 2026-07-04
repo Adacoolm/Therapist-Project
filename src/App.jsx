@@ -16,6 +16,7 @@ import {
   CustomerServiceOutlined
 } from '@ant-design/icons';
 import { motion, AnimatePresence } from 'framer-motion';
+import { requestJson } from './api';
 
 // --- UI TRANSLATIONS ---
 const TRANSLATIONS = {
@@ -634,6 +635,7 @@ const CompanionRenderer = ({ animalId, isTalking }) => {
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [userId, setUserId] = useState(null);
   const [step, setStep] = useState('chat'); // 'chat' | 'signin'
   
   const [language, setLanguage] = useState('English');
@@ -674,6 +676,19 @@ export default function App() {
 
   // Modal alert
   const [showLimitModal, setShowLimitModal] = useState(false);
+
+  useEffect(() => {
+    const token = localStorage.getItem('theramindToken');
+    const savedUserId = localStorage.getItem('theramindUserId');
+
+    if (token) {
+      setIsAuthenticated(true);
+    }
+
+    if (savedUserId) {
+      setUserId(savedUserId);
+    }
+  }, []);
 
   const chatEndRef = useRef(null);
   const t = TRANSLATIONS[language] || TRANSLATIONS['English'];
@@ -892,6 +907,8 @@ export default function App() {
 
   // Sign out handler
   const handleSignOut = () => {
+    localStorage.removeItem('theramindToken');
+    localStorage.removeItem('theramindUserId');
     setIsAuthenticated(false);
     setCompanion('koala');
     setMessageCount(0);
@@ -950,7 +967,7 @@ export default function App() {
   };
 
   // Send message
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputValue.trim()) return;
 
     checkGuestAction(() => {
@@ -962,7 +979,6 @@ export default function App() {
       setInputValue('');
       setMessageCount(prev => prev + 1);
 
-      // Add user message
       setMessages(prev => [
         ...prev,
         {
@@ -975,98 +991,161 @@ export default function App() {
 
       setIsTranslating(true);
 
-      // Grounding triggers
       const panicWords = ['panic', 'anxious', 'scared', 'stress', 'ansioso', 'miedo', 'estrés', 'angustia', 'hilfe', 'angst'];
       const hasPanic = panicWords.some(w => userText.toLowerCase().includes(w));
 
-      setTimeout(() => {
-        const organicResponses = {
-          English: [
-            "I hear how much weight you are carrying. Let us release it together. What does your body feel like in this moment?",
-            "You are safe here. It is completely okay to feel unsettled. You don't have to figure it all out right now.",
-            "I am right here with you. Let's take a slow, quiet pause and let your thoughts drift.",
-            "Thank you for sharing that with me. Your feelings make sense, and you are not alone in this."
-          ],
-          Spanish: [
-            "Escucho cuánto peso estás cargando. Liberémoslo juntos. ¿Cómo se siente tu cuerpo en este momento?",
-            "Estás a salvo aquí. Está completamente bien sentirse inquieto. No tienes que resolverlo todo ahora.",
-            "Estoy aquí contigo. Tomemos una pausa lenta y silenciosa y dejemos que tus pensamientos floten.",
-            "Gracias por compartir eso conmigo. Tus sentimientos tienen sentido y no estás solo en esto."
-          ]
-        };
+      const token = localStorage.getItem('theramindToken');
+      const payload = {
+        message: userText,
+        language
+      };
 
-        const responseList = organicResponses[language] || organicResponses['English'];
-        let choice = responseList[Math.floor(Math.random() * responseList.length)];
-
-        if (hasPanic) {
-          choice = language === 'Spanish' 
-            ? "Percibo que estás sintiendo una gran carga de angustia en este momento. Hagamos una pequeña pausa para respirar juntos y liberar esa tensión."
-            : "I can feel how heavy things are for you right now. Let's take a quiet pause to breathe together and release some of that tension.";
-        }
-
-        const translationText = language === 'Spanish' 
-          ? "Siento la carga de tus pensamientos. Estoy aquí para escucharte." 
-          : "I feel the weight of your thoughts. I am here to listen.";
-
-        setMessages(prev => [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            role: 'ai',
-            content: choice,
-            translation: translationText
+      requestJson('/api/chat', {
+        method: 'POST',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(payload)
+      })
+        .then(({ ok, data }) => {
+          if (!ok) {
+            throw new Error(data.error || 'Chat request failed');
           }
-        ]);
 
-        setIsTranslating(false);
-        speakText(choice, language);
+          const aiText = data.reply || data.message || 'I am here with you.';
+          const translationText = language === 'Spanish' 
+            ? 'Siento la carga de tus pensamientos. Estoy aquí para escucharte.' 
+            : 'I feel the weight of your thoughts. I am here to listen.';
 
-        if (hasPanic) {
-          setTimeout(() => {
-            triggerBreathingExercise();
-          }, 2000);
-        }
+          setMessages(prev => [
+            ...prev,
+            {
+              id: Date.now() + 1,
+              role: 'ai',
+              content: aiText,
+              translation: translationText
+            }
+          ]);
 
-      }, 1500);
+          setIsTranslating(false);
+          speakText(aiText, language);
+
+          if (hasPanic) {
+            setTimeout(() => {
+              triggerBreathingExercise();
+            }, 2000);
+          }
+        })
+        .catch((error) => {
+          console.error('Chat request failed:', error);
+          setMessages(prev => [
+            ...prev,
+            {
+              id: Date.now() + 1,
+              role: 'ai',
+              content: 'I am here with you. The connection is momentarily unavailable, but your words matter.',
+              translation: 'Estoy aquí contigo. La conexión está temporalmente indisponible, pero tus palabras importan.'
+            }
+          ]);
+          setIsTranslating(false);
+        });
     });
   };
 
   // Conventional login submit
-  const handleLoginSubmit = (values) => {
-    setIsAuthenticated(true);
-    setStep('chat');
-    message.success("Tagebuch/Journal connected securely.");
-  };
+  const handleLoginSubmit = async (values) => {
+    const username = values?.email?.trim();
+    const password = values?.password;
 
-  // OAuth SSO token interceptor placeholder implementation
-  const handleSsoLogin = async (provider) => {
+    if (!username || !password) {
+      message.error({ content: 'Please enter both email and password.', key: 'auth' });
+      return;
+    }
+
+    message.loading({ content: 'Authenticating...', key: 'auth' });
+
     try {
-      message.loading({ content: `Redirecting to secure OAuth 2.0 flow with ${provider}...`, key: 'auth' });
-      
-      // 1. Simulate secure redirect and token extraction from provider (Google/Apple/Microsoft)
-      const simulatedOauthToken = `sso_token_${provider.toLowerCase()}_${Math.random().toString(36).substring(2, 11)}`;
-      
-      // Front-end capture log for developers
-      console.log(`[Theramind Auth] Secure token retrieved from provider [${provider}]:`, simulatedOauthToken);
-      
-      // 2. Clear client-side hook placeholder showing how to post to backend callback safely
-      /*
-      const response = await fetch('/api/auth/callback', {
+      const loginResponse = await requestJson('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider, token: simulatedOauthToken })
+        body: JSON.stringify({ username, password })
       });
-      const userData = await response.json();
-      */
-      
-      setTimeout(() => {
+
+      const loginData = loginResponse.data;
+
+      if (loginResponse.ok) {
+        localStorage.setItem('theramindToken', loginData.token);
+        localStorage.setItem('theramindUserId', String(loginData.userId));
+        setUserId(loginData.userId);
         setIsAuthenticated(true);
         setStep('chat');
-        message.success({ content: `Connected securely via OAuth 2.0 with ${provider}. Auth state sent to /api/auth/callback.`, key: 'auth', duration: 4 });
-      }, 900);
+        message.success({ content: 'Signed in securely.', key: 'auth', duration: 4 });
+        return;
+      }
 
+      if (loginResponse.status === 401) {
+        const signupResponse = await requestJson('/api/auth/signup', {
+          method: 'POST',
+          body: JSON.stringify({ username, password })
+        });
+
+        const signupData = signupResponse.data;
+
+        if (signupResponse.ok || signupResponse.status === 201) {
+          const retryResponse = await requestJson('/api/auth/login', {
+            method: 'POST',
+            body: JSON.stringify({ username, password })
+          });
+          const retryData = retryResponse.data;
+
+          if (retryResponse.ok) {
+            localStorage.setItem('theramindToken', retryData.token);
+            localStorage.setItem('theramindUserId', String(retryData.userId));
+            setIsAuthenticated(true);
+            setStep('chat');
+            message.success({ content: 'Account created and signed in.', key: 'auth', duration: 4 });
+            return;
+          }
+        }
+
+        message.error({ content: signupData.error || loginData.error || 'Authentication failed.', key: 'auth' });
+        return;
+      }
+
+      message.error({ content: loginData.error || 'Authentication failed.', key: 'auth' });
     } catch (error) {
-      message.error({ content: "Authentication handshake failed.", key: 'auth' });
+      console.error('Authentication error:', error);
+      message.error({ content: 'Authentication handshake failed.', key: 'auth' });
+    }
+  };
+
+  // OAuth SSO token interceptor implementation
+  const handleSsoLogin = async (provider) => {
+    try {
+      message.loading({ content: `Connecting ${provider} securely...`, key: 'auth' });
+
+      const simulatedOauthToken = `sso_token_${provider.toLowerCase()}_${Math.random().toString(36).substring(2, 11)}`;
+      const endpoint = provider === 'Google' ? '/api/auth/google' : provider === 'Apple' ? '/api/auth/apple' : '/api/auth/microsoft';
+
+      const response = await requestJson(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({ idToken: simulatedOauthToken })
+      });
+
+      const data = response.data;
+
+      if (!response.ok) {
+        throw new Error(data.error || 'OAuth authentication failed');
+      }
+
+      localStorage.setItem('theramindToken', data.token);
+      localStorage.setItem('theramindUserId', String(data.userId));
+      setUserId(data.userId);
+      setIsAuthenticated(true);
+      setStep('chat');
+      message.success({ content: `Connected securely via ${provider}.`, key: 'auth', duration: 4 });
+    } catch (error) {
+      console.error('OAuth authentication error:', error);
+      message.error({ content: 'Authentication handshake failed.', key: 'auth' });
     }
   };
 
